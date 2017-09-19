@@ -1,0 +1,243 @@
+---
+- hosts: all
+
+  vars:
+    COMMON_SSH_PORT: 22
+    NEW_SSH_PORT: 2222
+  
+    ubuntu_common_required_packages:
+         - ufw
+         - fail2ban
+         - unattended-upgrades
+         - logwatch
+         - rkhunter 
+         - chkrootkit
+  
+  become: yes
+  tasks:
+
+   - name: Install aptitude
+     apt: name=aptitude state=latest install_recommends=no
+          update_cache=no
+
+
+
+   - name: Update APT package cache
+     apt: update_cache=no cache_valid_time=3600
+
+   - name: Upgrade APT to the latest packages
+     apt: upgrade=safe
+
+   - name: Install latest version of openssl
+     apt: name=openssl state=latest install_recommends=no
+          update_cache=no
+
+   - name: Install latest version libssl
+     apt: name=libssl-dev state=latest install_recommends=no
+          update_cache=no
+
+
+   - name: copy securetty
+     copy: src=securetty dest=/etc/securetty owner=root group=root mode=0600
+     
+   - name: Secure tmpfs against shared memory
+     mount:
+          name: "tmpfs"
+          path: "/run/shm"
+          src: "tmpfs"
+          fstype: "tmpfs"
+          opts: "ro,noexec,nosuid"
+          state: present
+   
+   - name: Secure Temporary create tmpDSK
+     command: dd if=/dev/zero of=/usr/tmpDSK bs=1024 count=500000
+   
+   - name: Format tmp
+     filesystem: fstype=mkfs.ext4 dev=/usr/tmpDSK
+
+   - name: CP tmp
+     command: cp -avr /tmp /tmpbackup
+   
+   - name: Mount tmpfs
+     mount:
+         name: "/usr/tmpDSK"
+         src: "/tmp"
+         fstype: "tmpfs"
+         opts: "loop,noexec,nosuid,rw"
+         state: present
+
+   - name: Change Permissions
+     file:
+         path: /tmp
+         mode: 1777
+
+   
+   - name: Copy bkp tmp
+     command: cp -avr /tmpbackup/ /tmp/
+     become: yes
+
+   - name: Delete Bkp
+     command: rm -rf /tmpbackup
+     become: yes
+
+   - name: Secure tmpfs against shared memory
+     mount:
+         name: /usr/tmpDSK
+         src: /tmp
+         fstype: tmpfs
+         opts: loop,nosuid,noexec,rw
+         state: present
+              
+   - name: Install required packages
+     apt: 
+        state: present
+        name: "{{ item }}"
+        install_recommends: yes
+     with_items: "{{ ubuntu_common_required_packages }}"
+
+   - name: Configure Unattedend-upgrades
+     command: dpkg-reconfigure -plow unattended-upgrades -fnoninteractive
+
+   - name: Create Group admin
+     group:
+        name: admin
+        state: present
+
+   - name: Creating user "{{ username }}" with admin access
+     user: 
+         name: "{{ username }}" 
+         password: "{{ 'password' | password_hash('sha512')}}"
+         groups: admin,sudo 
+         append: yes
+
+   - name: Disable Root password
+     command: passwd -l root 
+    
+   - name: Create APT update File
+     copy: 
+          content: "APT::Periodic::Update-Package-Lists '1';\nAPT::Periodic::Unattended-Upgrade '1';\n"
+          dest: "/etc/apt/apt.conf.d/20auto-upgrades"
+          backup: yes
+          owner: root
+          group: root
+          mode: 0644
+
+
+   - name: Change ssh port
+     lineinfile: 
+          dest: "/etc/ssh/sshd_config"
+          regexp: "^Port"
+          line: "Port {{NEW_SSH_PORT}}"
+          state: present
+     notify: Restart ssh
+
+
+   - name: Disallow password authentication
+     lineinfile: 
+          dest: /etc/ssh/sshd_config
+          regexp: "^PasswordAuthentication"
+          line: "PasswordAuthentication no"
+          state: present
+     notify: Restart ssh
+
+   - name: Disallow root SSH access
+     lineinfile: 
+          dest: /etc/ssh/sshd_config
+          regexp: "^PermitRootLogin"
+          line: "PermitRootLogin no"
+          state: present
+     notify: Restart ssh
+   
+   - name: Disallow XForwading
+     lineinfile: 
+          dest: /etc/ssh/sshd_config
+          regexp: "^X11Forwarding"
+          line: "X11Forwarding no"
+          state: present
+   
+   - name: Disallow Rhosts
+     lineinfile: 
+          dest: /etc/ssh/sshd_config
+          regexp: "^IgnoreRhosts"
+          line: "IgnoreRhosts yes"
+          state: present
+
+   - name: SSH MaxAttemps
+     lineinfile: 
+          dest: /etc/ssh/sshd_config
+          regexp: "^MaxAuthTries"
+          line: "MaxAuthTries 3"
+          state: present
+     notify: Restart ssh
+   
+
+   - name: copy fail2ban local config
+     copy: src=jail.conf.local dest=/etc/fail2ban/jail.conf owner=root group=root mode=0644
+     notify: Restart fail2ban
+   
+   - name: Sysctl Network Security
+     copy: src=10-network-security.conf dest=/etc/sysctl.d/10-network-security.conf owner=root group=root mode=0644
+     notify: Restart procps
+
+   - name: ufw allow SSH 2200
+     command: ufw allow 2200
+    
+   - name: ufw allow http
+     command: ufw allow http
+
+   - name: Enable ufw
+     command: ufw enable
+
+   - name: Config Chkrootkit RUN_DAILY
+     lineinfile:
+         dest: /etc/chkrootkit.conf
+         regexp: "^RUN_DAILY"
+         line: 'RUN_DAILY="true'
+         state: present
+   
+   - name: Config Chkrootkit RUN_DAILY_OPTS
+     lineinfile:
+         dest: /etc/chkrootkit.conf
+         regexp: '^RUN_DAILY_OPTS="-q"'
+         line: 'RUN_DAILY_OPTS=""'
+         state: present
+   
+   - name: Config RKHUNTER
+     lineinfile:
+         dest: /etc/default/rkhunter
+         regexp: '^CRON_DAILY_RUN=""'
+         line: 'CRON_DAILY_RUN="true"'
+         state: present
+   
+
+   - name: Config RKHUNTER
+     lineinfile:
+         dest: /etc/default/rkhunter
+         regexp: '^CRON_DB_UPDATE=""'
+         line: 'CRON_DB_UPDATE="true"'
+         state: present
+   
+
+
+
+
+   - name: Configure crontab rkhunter
+     command: "{{item}}"
+     with_items:
+         - 'mv /etc/cron.weekly/rkhunter /etc/cron.weekly/rkhunter_update'
+         - 'mv /etc/cron.daily/rkhunter /etc/cron.weekly/rkhunter_run'
+         - 'mv /etc/cron.daily/chkrootkit /etc/cron.weekly/'
+
+
+  handlers:
+    - name: Restart ssh
+      service: name=ssh state=restarted
+    
+    - name: Restart fail2ban
+      service: name=fail2ban state=restarted 
+    
+    - name: Restart procps
+      service: name=procps state=restarted
+
+
+
