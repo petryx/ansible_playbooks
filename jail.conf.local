@@ -54,7 +54,7 @@ usedns = warn
 #
 # Destination email address used solely for the interpolations in
 # jail.{conf,local} configuration files.
-destemail = amz1yr@gmail.com
+destemail = xxxxx@gmail.com
 
 #
 # Name of the sender for mta actions
